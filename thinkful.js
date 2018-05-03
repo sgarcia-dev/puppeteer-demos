@@ -1,16 +1,39 @@
+// TODO: Refactor error handling to take screenshot after crashing.
 const puppeteer = require("puppeteer"),
 	rimraf = require("rimraf"),
+	jquery = require('jquery'),
 	colors = require("colors"),
 	notifier = require("node-notifier"),
 	nodemailer = require("nodemailer"),
 	config = require("./package.json").thinkfulConfig,
-	minutes = 2,
+	minutes = 5,
 	interval = minutes * 60 * 1000,
 	THINKFUL_URL = 'https://lark.thinkful.com/available-students/',
-	DEBUG = false,
-	CHROME_MODE = DEBUG ? 'Chrome' : 'Chrome in Headless Mode';
+	COURSE_NAME_SELECTOR = 'h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]',
+	DEBUG = true,
+	CHROME_MODE = DEBUG ? 'Chrome' : 'Chrome in Headless Mode',
+	FOUND_STUDENTS = {},
+	CREDENTIALS = {
+		thinkful: {
+			user: '',
+			password: ''
+		},
+		google: {
+			user: '',
+			password: ''
+		}
+	};
 
-checkForStudents();
+safeCheckForStudents();
+
+async function safeCheckForStudents() {
+	try {
+		await checkForStudents();
+	} catch (e) {
+		logError(`Whoops, an error ocurred! Trying again ...\n${e}`);
+		await safeCheckForStudents();
+	}
+}
 
 async function checkForStudents() {
 	log`RIMRAF: Deleting previous run screenshots ...`
@@ -34,23 +57,26 @@ async function checkForStudents() {
 	await page.goto(THINKFUL_URL);
 	log`Thinkful's Dashboard page loaded. Entering Login Credentials ...`;
 	await page.screenshot({ path: "screenshots/1.png" });
-	await page.type("#LoginInput", config.user);
-	await page.type("#LoginPassword", config.pass);
+	await page.type("#LoginInput", CREDENTIALS.thinkful.user);
+	await page.type("#LoginPassword", CREDENTIALS.thinkful.password);
 	await page.screenshot({ path: "screenshots/2.png" });
 	log`Logging in ...`;
 	await page.click("button[type=submit]");
 	await page.waitForSelector(".tui-modal-close-button");
 	await page.click(".tui-modal-close-button");
-	await page.waitForSelector(
-		'h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]'
-	);
+	await page.waitForSelector(COURSE_NAME_SELECTOR);
 	await page.screenshot({ path: "screenshots/3.png" });
 	log`Available Students list shown now, checking for available students ...`;
 	// TODO: Add jQuery
-	// await page.addScriptTag({url: 'https://code.jquery.com/jquery-3.2.1.min.js'});
+	await page.addScriptTag({path: require.resolve('jquery')});
+	// let studentsAvailableText = await page.evaluate(() => {
+	// 	return document.querySelector('h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]')
+	// 		.nextElementSibling.innerText;
+	// });
 	let studentsAvailableText = await page.evaluate(() => {
-		return document.querySelector('h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]')
-			.nextElementSibling.innerText;
+		const titleEl = window.jQuery('h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]'),
+			studentsAvailableText = titleEl.next().children().first().text();
+		return studentsAvailableText;
 	});
 	log(`Text Found: ${studentsAvailableText}`);
 
@@ -59,19 +85,61 @@ async function checkForStudents() {
 		studentsAvailableText.includes("student available")
 	) {
 		if (studentsAvailableText !== '0 students available') {
-			logSuccess(`STUDENTS FOUND: ${studentsAvailableText}`);
+			log(`STUDENTS FOUND: Printing ...`);
 
-			sendEmail({
-				title: "Students found!",
-				msg: `Found the following students: ${studentsAvailableText}`
+			await page.evaluate(() => {
+				const COURSE_NAME_SELECTOR = 'h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]';
+				window.jQuery(COURSE_NAME_SELECTOR)
+					.closest('.page-content.course-students')
+					.find('.button.button__mini.button__gray')
+					.click();
+				return true;
 			});
+
+			await page.waitForSelector('.matchable-grid.queue-object');
+			await page.screenshot({ path: "screenshots/4.png" });
+
+			const studentsArr = await page.evaluate(() => {
+				const COURSE_NAME_SELECTOR = 'h2[title="Flexible Web Development Bootcamp: Fundamentals Phase"]';
+				var studentBlocks = window.jQuery(COURSE_NAME_SELECTOR)
+					.closest('.page-content.course-students')
+					.find('.matchable-grid.queue-object');
+				var studentsArr = studentBlocks.toArray().map(studentBlock => {
+					const $block = window.jQuery(studentBlock);
+					return {
+						name: $block.find('.queue-object-name').text(),
+						startDate: $block.find('.details-section-value').first().text(),
+						description: $block.find('.details-section-value').last().text(),
+						foundDate: new Date().toString(),
+					}
+				});
+				return studentsArr;
+			});
+			const newStudents = [];
+			studentsArr.forEach(student => {
+				if (!FOUND_STUDENTS[student.name]) {
+					FOUND_STUDENTS[student.name] = student;
+					newStudents.push(student);
+				}
+			});
+			logWarn(`Found Students: ${studentsArr.map(student => student.name).join(', ')}`);
+			const studentString = newStudents.map(student => {
+				return `Name: ${student.name}\nStart Date: ${student.startDate}\nDescription: ${student.description}\n`;
+			}).join(' \n');
+			if (newStudents.length > 0) {
+				logSuccess(`NEW Students: \n \n${studentString}`);
+				sendEmail({
+					title: "Students found!",
+					msg: `Found the following students: \n \n${studentString}`
+				});
+			}
 		} else {
 			logError(`NO STUDENTS FOUND: ${studentsAvailableText}`);
 		}
 
 		logWarn(`Scheduling new job in ${minutes} minute(s) (Or at ${addMinutes(new Date(), minutes).toString()})`);
 		setTimeout(async () => {
-			checkForStudents();
+			safeCheckForStudents();
 		}, interval);
 	} else {
 		logError(`FATAL ERROR: studentsAvailableText didn't resolve to an expected variable. Please debug code.`);
@@ -88,8 +156,8 @@ function sendEmail(args) {
 	var transporter = nodemailer.createTransport({
 		service: "gmail",
 		auth: {
-			user: "sgarcia.dev@gmail.com",
-			pass: "qzuqaezcpzcldmwe"
+			user: CREDENTIALS.google.user,
+			pass: CREDENTIALS.google.password
 		}
 	});
 

@@ -13,14 +13,6 @@
     "colors": "^1.2.1",
     "puppeteer": "^1.2.0"
   },
-  "config": {
-    "user": "sgarcia.dev",
-    "pass": "?fsrxn47SG"
-  },
-  "thinkfulConfig": {
-    "user": "sgarcia@thinkful.com",
-    "pass": "?cortana47SRXNT"
-  },
   "devDependencies": {
     "jquery": "^3.3.1",
     "node-notifier": "^5.2.1",
